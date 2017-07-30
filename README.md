@@ -1,5 +1,5 @@
 # IoTDCP
-Discovery and Control Protocol for IoT
+IoT Discovery and Control Protocol
 
 ----
 
