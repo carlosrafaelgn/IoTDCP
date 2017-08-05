@@ -9,6 +9,11 @@
 #include <WiFiUdp.h>
 #include <IoTDCP.h>
 
+// Just to make it easier to reference the properties
+#define PropState 0
+#define PropColor 1
+#define PropSampleEnum 2
+
 const IoTPropertyDescriptor IoTInterface0Properties[] = {
   { "State", IoTProperty.ModeReadOnly, IoTProperty.DataTypeU8, 1, IoTProperty.UnitEnum, IoTProperty.UnitOne, 0 },
   { "Color", IoTProperty.ModeReadWrite, IoTProperty.DataTypeU8, 3, IoTProperty.UnitRGB, IoTProperty.UnitOne, 0 },
@@ -20,9 +25,9 @@ const IoTInterfaceDescriptor IoTInterfaces[IoTInterfaceCount] = {
 };
 
 const IoTEnumDescriptor16 IoTInterface0SampleEnum[] = {
-  { "Value 0", 1 },
-  { "Value -2", (uint16_t)-2 },
-  { "Value -1", (uint16_t)-1 },
+  { "Value 0", 0 },
+  { "Value 1", 1 },
+  { "Value 2", 2 },
   { "Value 255", 255 }
 };
 
@@ -83,13 +88,13 @@ void getProperty(IoTMessageGetProperty* msg) {
     return;
   }
   switch (msg->propertyIndex) {
-  case 0:
+  case PropState:
     responseLength = IoTServer.buildResponse8(IoTServer.ResponseOK, onOff);
     break;
-  case 1:
+  case PropColor:
     responseLength = IoTServer.buildResponseBuffer(IoTServer.ResponseOK, color, 3);
     break;
-  case 2:
+  case PropSampleEnum:
     responseLength = IoTServer.buildResponse16(IoTServer.ResponseOK, enumValue);
     break;
   default:
@@ -108,10 +113,10 @@ void setProperty(IoTMessageSetProperty* msg, uint16_t payloadLength) {
   payloadLength -= 2;
 
   switch (msg->propertyIndex) {
-  case 0:
+  case PropState:
     responseLength = IoTServer.buildResponse(IoTServer.ResponseInterfacePropertyReadOnly);
     break;
-  case 1:
+  case PropColor:
     if (payloadLength != 3) {
       responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfacePropertyValue);
     } else {
@@ -122,13 +127,23 @@ void setProperty(IoTMessageSetProperty* msg, uint16_t payloadLength) {
       responseLength = IoTServer.buildResponseBuffer(IoTServer.ResponseOK, color, 3);
     }
     break;
-  case 2:
+  case PropSampleEnum:
     if (payloadLength != 2) {
       responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfacePropertyValue);
     } else {
-      enumValue = ((uint16_t*)msg->propertyValue)[0];
-      // Any other commands should go here
-      responseLength = IoTServer.buildResponse16(IoTServer.ResponseOK, enumValue);
+      switch (*((uint16_t*)msg->propertyValue)) {
+      case 0:
+      case 1:
+      case 2:
+      case 255:
+        enumValue = *((uint16_t*)msg->propertyValue);
+        // Any other commands should go here
+        responseLength = IoTServer.buildResponse16(IoTServer.ResponseOK, enumValue);
+        break;
+      default:
+        responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfacePropertyValue);
+        break;
+      }
     }
     break;
   default:
@@ -138,7 +153,6 @@ void setProperty(IoTMessageSetProperty* msg, uint16_t payloadLength) {
 }
 
 void handleMessage() {
-  // Handle the message
   switch (IoTServer.message()) {
   case IoTServer.MessageDescribeEnum:
     describeEnum((IoTMessageDescribeEnum*)IoTServer.payloadBuffer());
@@ -185,7 +199,7 @@ void setup() {
   color[0] = 0;
   color[1] = 0;
   color[2] = 0;
-  enumValue = 1;
+  enumValue = 0;
 }
 
 void loop() {
