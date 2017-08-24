@@ -64,6 +64,10 @@
 #error("IoTNameUTF8 not defined")
 #endif
 
+#ifndef IoTCategoryUuid
+#error("IoTCategoryUuid not defined")
+#endif
+
 #ifndef IoTUuid
 #error("IoTUuid not defined")
 #endif
@@ -389,6 +393,7 @@ public:
 #define ServerFlagEscape 0x10
 
 const uint8_t IoTServerNameUTF8[] = IoTNameUTF8;
+const uint8_t IoTServerCategoryUuid[] = IoTCategoryUuid; // Element 0 must be the least significant, whereas element 15 must be the most significant
 const uint8_t IoTServerUuid[] = IoTUuid; // Element 0 must be the least significant, whereas element 15 must be the most significant
 extern const IoTInterfaceDescriptor IoTInterfaces[IoTInterfaceCount];
 
@@ -513,6 +518,8 @@ private:
 #endif
 		uint16_t dstOffset = escapeBuffer(HeaderLength, &flags, 1);
 
+		dstOffset = escapeBuffer(dstOffset, IoTServerCategoryUuid, 16);
+
 		dstOffset = escapeBuffer(dstOffset, IoTServerUuid, 16);
 
 		const uint8_t interfaceCount = IoTInterfaceCount;
@@ -521,7 +528,7 @@ private:
 		for (uint8_t i = 0; i < IoTInterfaceCount; i++)
 			dstOffset = escapeBuffer(dstOffset, &(IoTInterfaces[i].type), 1);
 
-		const uint8_t nameLen = sizeof(IoTServerNameUTF8) - 1; // Remove the null char the end
+		const uint8_t nameLen = sizeof(IoTServerNameUTF8) - 1; // Remove the null char
 		dstOffset = escapeBuffer(dstOffset, &nameLen, 1);
 		dstOffset = escapeBuffer(dstOffset, IoTServerNameUTF8, nameLen);
 
