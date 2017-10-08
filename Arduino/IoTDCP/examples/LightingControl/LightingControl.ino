@@ -241,16 +241,15 @@ void loop() {
   }
 
   uint16_t bytesInPacket = udpServer.parsePacket();
-  if (!bytesInPacket) {
-    delay(10);
+  if (!bytesInPacket)
     return;
-  }
+
+  uint16_t bytesRead = udpServer.read(receivedBuffer, bytesInPacket < sizeof(receivedBuffer) ? bytesInPacket : sizeof(receivedBuffer));
+  if (!bytesRead || bytesRead > sizeof(receivedBuffer))
+    return;
 
   uint8_t flushed = false;
   while (bytesInPacket) {
-    uint16_t bytesRead = udpServer.read(receivedBuffer, bytesInPacket < sizeof(receivedBuffer) ? bytesInPacket : sizeof(receivedBuffer));
-    if (!bytesRead)
-      break;
     uint16_t usedBytes;
     if (IoTServer.process(receivedBuffer, bytesRead, &usedBytes)) {
       yield();
@@ -269,9 +268,10 @@ void loop() {
       udpServer.beginPacket(ip, port);
       udpServer.write(IoTServer.responseBuffer(), responseLength);
       udpServer.endPacket();
-      break;
+    } else {
+      yield();
     }
-    bytesInPacket -= usedBytes;
+    bytesRead -= usedBytes;
   }
 
   if (!flushed)
