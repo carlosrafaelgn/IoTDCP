@@ -41,6 +41,7 @@ IECYobi	LITERAL1
 IECZebi	LITERAL1
 interfaceCommand	KEYWORD2
 interfaceIndex	KEYWORD2
+IoTCategoryUuid	LITERAL1
 IoTClientCount	LITERAL1
 IoTEnumDescriptor16	KEYWORD1
 IoTEnumDescriptor32	KEYWORD1
