@@ -30,9 +30,17 @@
 #include "stdafx.h"
 
 #define IoTNameUTF8 "Sample Device"
+// IoTCategoryUuid should be the same for all devices of the same category (i.e. same product)
 #define IoTCategoryUuid {0xB0, 0x2C, 0xB8, 0x8E, 0xBC, 0x6A, 0xC1, 0xB6, 0xEE, 0x49, 0xBC, 0x6F, 0xA4, 0x36, 0x41, 0x77} // 774136A4-6FBC-49EE-B6C1-6ABC8EB82CB0
 #define IoTUuid {0x19, 0xB4, 0x77, 0xF1, 0x7F, 0x54, 0xD2, 0x94, 0x22, 0x40, 0x9B, 0x68, 0xED, 0xA6, 0xD9, 0x7B} // 7BD9A6ED-689B-4022-94D2-547FF177B419
-#define IoTNoPassword
+//**************************************
+// If the device requires no password
+//#define IoTNoPassword
+//**************************************
+// If the device is password protected
+#define IoTPasswordReadOnly
+#define IoTMaxPasswordLength 32
+//**************************************
 #define IoTInterfaceCount 1
 #define IoTMaxPayloadLength 256
 
@@ -198,6 +206,11 @@ void handleMessage() {
 
 int main() {
 	IoTServer.begin();
+	//**************************************
+	// Set the initial password, if the
+	// device is password protected
+	IoTServer.storedPassword("Password", 8);
+	//**************************************
 
 	onOff = IoTInterfaceOnOff.StateOff;
 	color[0] = 0;
