@@ -34,12 +34,12 @@
 
 // Client message format (Request)
 // - StartOfPacket
+// - Message type
 // - Client Id
 // - Client Sequence Number (Low byte)
 // - Client Sequence Number (High byte)
 // - Password length
 // - Password (UTF-8 encoded)
-// - Message
 // - Payload length (Low byte)
 // - Payload length (High byte)
 // - Payload bytes
@@ -47,6 +47,7 @@
 
 // Server message format (Response)
 // - StartOfPacket
+// - Message type (this is the same message type sent by the client in case of a regular response, or ServerMessagePropertyChange)
 // - Client Id
 // - Client Sequence Number (Low byte)
 // - Client Sequence Number (High byte)
@@ -58,10 +59,6 @@
 
 #ifndef countof
 #define countof(X) (sizeof(X) / sizeof((X)[0]))
-#endif
-
-#ifndef IoTNameUTF8
-#error("IoTNameUTF8 not defined")
 #endif
 
 #ifndef IoTCategoryUuid
@@ -92,8 +89,8 @@
 #error("IoTClientCount <= 0")
 #endif
 
-#if (IoTClientCount > 128)
-#error("IoTClientCount > 128")
+#if (IoTClientCount > 255)
+#error("IoTClientCount > 255")
 #endif
 
 #ifndef IoTMaxPayloadLength
@@ -104,8 +101,24 @@
 #error("IoTMaxPayloadLength < 64")
 #endif
 
-#if (IoTMaxPayloadLength > 4096)
-#error("IoTMaxPayloadLength > 4096")
+#if (IoTMaxPayloadLength > 32768)
+#error("IoTMaxPayloadLength > 32768")
+#endif
+
+#ifndef IoTMaxNameLength
+#define IoTMaxNameLength 32
+#endif
+
+#if (IoTMaxNameLength < 0)
+#error("IoTMaxNameLength < 0")
+#endif
+
+#if (IoTMaxNameLength > 64)
+#error("IoTMaxNameLength > 64")
+#endif
+
+#if (IoTMaxPayloadLength <= IoTMaxNameLength)
+#error("IoTMaxPayloadLength <= IoTMaxNameLength")
 #endif
 
 #ifndef IoTMaxPasswordLength
@@ -116,21 +129,18 @@
 #error("IoTMaxPasswordLength < 0")
 #endif
 
-#if (IoTMaxPasswordLength > 32)
-#error("IoTMaxPasswordLength > 32")
+#if (IoTMaxPasswordLength > 64)
+#error("IoTMaxPasswordLength > 64")
 #endif
 
-#define IoTMaxPasswordLengthEscaped (IoTMaxPasswordLength * 2)
-
-#if (IoTMaxPayloadLength < IoTMaxPasswordLengthEscaped)
-#error("IoTMaxPayloadLength < IoTMaxPasswordLengthEscaped")
+#if (IoTMaxPayloadLength <= IoTMaxPasswordLength)
+#error("IoTMaxPayloadLength <= IoTMaxPasswordLength")
 #endif
 
 #ifdef IoTNoPassword
 #undef IoTMaxPasswordLength
 #define IoTMaxPasswordLength 0
 #define passwordLength 0
-#define clientPasswordLength 0
 #ifndef IoTPasswordReadOnly
 #define IoTPasswordReadOnly
 #endif
@@ -172,7 +182,8 @@ public:
 		DataTypeU32 = 0x06, // Unsigned 32 bits integer (little endian)
 		DataTypeU64 = 0x07, // Unsigned 64 bits integer (little endian)
 		DataTypeFloat32 = 0x08, // 32 bits float point (IEEE 754 / little endian)
-		DataTypeFloat64 = 0x09 // 64 bits float point (IEEE 754 / little endian)
+		DataTypeFloat64 = 0x09, // 64 bits float point (IEEE 754 / little endian)
+		DataTypeRGBTriplet = 0x0A // Unsigned 24 bits integer (little endian / to be used only with UnitRGB)
 	};
 
 	enum _Units {
@@ -214,8 +225,9 @@ public:
 		UnitSievert = 0x23,
 		UnitKatal = 0x24,
 
-		UnitBool = 0xFC, // dataType must be DataTypeU8, where false == 0, true != 0 (unitDen and exponent must be ignored)
-		UnitRGB = 0xFD, // dataType must be DataTypeU8, elementCount must be 3 or 4, unitDen and exponent must be ignored (first byte must be R, followed by G, then B and finally A, if elementCount is 4)
+		UnitBool = 0xFB, // dataType must be DataTypeU8, where false == 0, true != 0 (unitDen and exponent must be ignored)
+		UnitRGB = 0xFC, // dataType must be DataTypeRGBTriplet, unitDen and exponent must be ignored (first byte must be R, followed by G, then B)
+		UnitRGBA = 0xFD, // dataType must be DataTypeU32, unitDen and exponent must be ignored (first byte must be R, followed by G, then B and finally A)
 		UnitUTF8Text = 0xFE, // dataType must be DataTypeU8, elementCount contains the maximum length (including the null char), unitDen and exponent must be ignored (text must be null terminated and must be encoded in UTF-8)
 		UnitEnum = 0xFF // dataType must be DataTypeS8/DataTypeU8/DataTypeS16/DataTypeU16/DataTypeS32/DataTypeU32, unitDen and exponent must be ignored
 	};
@@ -381,18 +393,16 @@ struct IoTMessageSetProperty {
 public:
 	uint8_t interfaceIndex;
 	uint8_t propertyIndex;
+	uint16_t propertyValueLength;
 	uint8_t propertyValue[1];
 };
 
 #define StartOfPacket 0x55
-#define Escape 0x1B
 #define EndOfPacket 0x33
-#define HeaderLength 7
+#define ResponseHeaderLength 8
+#define RequestHeaderLength 8
 #define EndOfPacketLength 1
-#define ServerStateMask 0x0F
-#define ServerFlagEscape 0x10
 
-const uint8_t IoTServerNameUTF8[] = IoTNameUTF8;
 const uint8_t IoTServerCategoryUuid[] = IoTCategoryUuid; // Element 0 must be the least significant, whereas element 15 must be the most significant
 const uint8_t IoTServerUuid[] = IoTUuid; // Element 0 must be the least significant, whereas element 15 must be the most significant
 extern const IoTInterfaceDescriptor IoTInterfaces[IoTInterfaceCount];
@@ -400,109 +410,102 @@ extern const IoTInterfaceDescriptor IoTInterfaces[IoTInterfaceCount];
 class _IoTServer {
 public:
 	enum _CliendIds {
-		ClientIdQueryDevice = 0xFF,
-		ClientIdDescribeInterface = 0xFD,
-		ClientIdDescribeEnum = 0xFB,
-		ClientIdChangePassword = 0xF9,
-		ClientIdHandshake = 0xF7
+		InvalidClientId = 0xFF
 	};
 
 	enum _SequenceNumbers {
-		MaximumSequenceNumber = 0xFFFC // 0xFFFC is 0x3FFF shifted left by two bits
+		MaximumSequenceNumber = 0xFFFF
 	};
 
 	enum _Messages {
 		MessageQueryDevice = 0x00,
-		MessageDescribeInterface = 0x02,
-		MessageDescribeEnum = 0x04,
-		MessageChangePassword = 0x06,
-		MessageHandshake = 0x08,
-		MessagePing = 0x0A,
-		MessageReset = 0x0C,
-		MessageGoodBye = 0x0E,
-		MessageExecute = 0x10,
-		MessageGetProperty = 0x12,
-		MessageSetProperty = 0x14,
-		MessageMax = 0x14
+		MessageDescribeInterface = 0x01,
+		MessageDescribeEnum = 0x02,
+		MessageChangeName = 0x03,
+		MessageChangePassword = 0x04,
+		MessageHandshake = 0x05,
+		MessagePing = 0x06,
+		MessageReset = 0x07,
+		MessageGoodBye = 0x08,
+		MessageExecute = 0x09,
+		MessageGetProperty = 0x0A,
+		MessageSetProperty = 0x0B,
+		MessageMax = 0x0B
+	};
+
+	enum _ServerMessages {
+		ServerMessagePropertyChange = 0x80
 	};
 
 	enum _Replies {
 		ResponseOK = 0x00,
-		ResponseDeviceError = 0x02,
-		ResponseUnknownClient = 0x04,
-		ResponseUnsupportedMessage = 0x06,
-		ResponsePayloadTooLarge = 0x08,
-		ResponseInvalidPayload = 0x0A,
-		ResponseEndOfPacketNotFound = 0x0C,
-		ResponseWrongPassword = 0x0E,
-		ResponsePasswordReadOnly = 0x10,
-		ResponseCannotChangePasswordNow = 0x12,
-		ResponseInvalidInterface = 0x14,
-		ResponseInvalidInterfaceCommand = 0x16,
-		ResponseInvalidInterfaceProperty = 0x18,
-		ResponseInterfacePropertyReadOnly = 0x1A,
-		ResponseInterfacePropertyWriteOnly = 0x1C,
-		ResponseInvalidInterfacePropertyValue = 0x1E,
-		ResponseTryAgainLater = 0x20,
+		ResponseDeviceError = 0x01,
+		ResponseUnknownClient = 0x02,
+		ResponseUnsupportedMessage = 0x03,
+		ResponsePayloadTooLarge = 0x04,
+		ResponseInvalidPayload = 0x05,
+		ResponseEndOfPacketNotFound = 0x06,
+		ResponseWrongPassword = 0x07,
+		ResponseNameReadOnly = 0x08,
+		ResponsePasswordReadOnly = 0x09,
+		ResponseCannotChangeNameNow = 0x0A,
+		ResponseCannotChangePasswordNow = 0x0B,
+		ResponseInvalidInterface = 0x0C,
+		ResponseInvalidInterfaceCommand = 0x0D,
+		ResponseInvalidInterfaceProperty = 0x0E,
+		ResponseInterfacePropertyReadOnly = 0x0F,
+		ResponseInterfacePropertyWriteOnly = 0x10,
+		ResponseInvalidInterfacePropertyValue = 0x11,
+		ResponseTryAgainLater = 0x12,
 		ResponseMax = 0x20
 	};
 
 	enum _Flags {
-		FlagPasswordProtected = 0x01,
-		FlagPasswordReadOnly = 0x02,
-		FlagResetSupported = 0x04,
-		FlagEncryptionRequired = 0x08
+		FlagNameReadOnly = 0x01,
+		FlagPasswordProtected = 0x02,
+		FlagPasswordReadOnly = 0x04,
+		FlagResetSupported = 0x08,
+		FlagEncryptionRequired = 0x10
 	};
 
 private:
 	struct _IoTClient {
 	public:
 		uint16_t sequenceNumber;
-		uint8_t id;
-		uint32_t ip;
 		uint16_t port;
+		uint32_t ip;
 	};
 
-	static uint8_t state;
-
 	static _IoTClient clients[IoTClientCount];
-	static uint8_t nextClientIndex, nextClientId;
+
+	static uint8_t nameLength;
+#ifdef IoTNameReadOnly
+	static const uint8_t* name;
+#else
+	static const uint8_t name[IoTMaxNameLength];
+#endif
 
 #ifndef IoTNoPassword
 	static uint8_t passwordLength;
+#ifdef IoTPasswordReadOnly
+	static const uint8_t* password;
+#else
 	static uint8_t password[IoTMaxPasswordLength];
-	static uint8_t clientPasswordLength;
-	static uint8_t clientPassword[IoTMaxPasswordLength];
 #endif
-	static uint8_t clientPasswordLengthEscaped;
-	static uint8_t clientIndex;
+#endif
+
 	static uint8_t clientId;
 	static uint16_t clientSequenceNumber;
 	static uint8_t clientMessageRepeated;
 	static uint8_t clientMessage;
-	static uint16_t clientPayloadIndex;
+	static const uint8_t* clientPayloadBuffer;
 	static uint16_t clientPayloadLength;
-	static uint16_t clientPayloadReceivedLength;
-	static uint8_t clientError;
-	static uint16_t clientResponseReady;
+	static uint8_t clientResponseReady;
 
-	static uint8_t buffer[HeaderLength + IoTMaxPayloadLength + EndOfPacketLength];
+	static uint16_t bufferOffset;
+	static uint8_t buffer[ResponseHeaderLength + IoTMaxPayloadLength + EndOfPacketLength];
 
-	static uint16_t escapeBuffer(uint16_t dstOffset, const void* srcBuffer, uint16_t length) {
-		while (length--) {
-			const uint8_t v = *((const uint8_t*)srcBuffer);
-			srcBuffer = ((const uint8_t*)srcBuffer) + 1;
-			if (v == StartOfPacket || v == Escape) {
-				buffer[dstOffset++] = Escape;
-				buffer[dstOffset++] = v ^ 1;
-			} else {
-				buffer[dstOffset++] = v;
-			}
-		}
-		return dstOffset;
-	}
-
-	static uint16_t buildQueryDeviceResponse() {
+	static void buildQueryDeviceResponse() {
 		uint8_t flags = 0;
 #ifndef IoTNoPassword
 		flags |= FlagPasswordProtected;
@@ -513,108 +516,120 @@ private:
 #ifdef IoTResetSupported
 		flags |= FlagResetSupported;
 #endif
+#ifdef IoTNameReadOnly
+		flags |= FlagNameReadOnly;
+#endif
 #ifdef IoTEncryptionRequired
 		flags |= FlagEncryptionRequired;
 #endif
-		uint16_t dstOffset = escapeBuffer(HeaderLength, &flags, 1);
+		writeResponse(flags);
 
-		dstOffset = escapeBuffer(dstOffset, IoTServerCategoryUuid, 16);
+		writeResponse(IoTServerCategoryUuid, 16);
 
-		dstOffset = escapeBuffer(dstOffset, IoTServerUuid, 16);
+		writeResponse(IoTServerUuid, 16);
 
-		const uint8_t interfaceCount = IoTInterfaceCount;
-		dstOffset = escapeBuffer(dstOffset, &interfaceCount, 1);
+		writeResponse(IoTInterfaceCount);
 
 		for (uint8_t i = 0; i < IoTInterfaceCount; i++)
-			dstOffset = escapeBuffer(dstOffset, &(IoTInterfaces[i].type), 1);
+			writeResponse(IoTInterfaces[i].type);
 
-		const uint8_t nameLen = sizeof(IoTServerNameUTF8) - 1; // Remove the null char
-		dstOffset = escapeBuffer(dstOffset, &nameLen, 1);
-		dstOffset = escapeBuffer(dstOffset, IoTServerNameUTF8, nameLen);
+		if (!nameLength || !name) {
+			writeResponse(3);
+			writeResponse('I');
+			writeResponse('o');
+			writeResponse('T');
+		} else {
+			writeResponse(nameLength);
+			writeResponse(name, nameLength);
+		}
 
-		return buildResponse(ResponseOK, dstOffset - HeaderLength);
+		buildResponse(ResponseOK);
 	}
 
-	static uint16_t buildDescribeInterfaceResponse(uint8_t interfaceIndex) {
+	static void buildDescribeInterfaceResponse(uint8_t interfaceIndex) {
 		if (interfaceIndex >= IoTInterfaceCount)
 			return buildResponse(ResponseInvalidInterface);
 
 		const IoTInterfaceDescriptor* const interfaceDescriptor = &(IoTInterfaces[interfaceIndex]);
 
-		uint16_t dstOffset = escapeBuffer(HeaderLength, &interfaceIndex, 1);
+		writeResponse(interfaceIndex);
 
 		uint8_t nameLen = (uint8_t)strlen(interfaceDescriptor->name);
-		dstOffset = escapeBuffer(dstOffset, &nameLen, 1);
-		dstOffset = escapeBuffer(dstOffset, interfaceDescriptor->name, nameLen);
+		writeResponse(nameLen);
+		writeResponse(interfaceDescriptor->name, nameLen);
 
-		dstOffset = escapeBuffer(dstOffset, &(interfaceDescriptor->type), 1);
+		writeResponse(interfaceDescriptor->type);
 
 		const uint8_t propertyCount = interfaceDescriptor->propertyCount;
-		dstOffset = escapeBuffer(dstOffset, &propertyCount, 1);
+		writeResponse(propertyCount);
 
 		for (uint8_t i = 0; i < propertyCount; i++) {
 			const IoTPropertyDescriptor* const propertyDescriptor = &(interfaceDescriptor->propertyDescriptors[i]);
 
 			nameLen = (uint8_t)strlen(propertyDescriptor->name);
-			dstOffset = escapeBuffer(dstOffset, &nameLen, 1);
-			dstOffset = escapeBuffer(dstOffset, propertyDescriptor->name, nameLen);
-			dstOffset = escapeBuffer(dstOffset, &(propertyDescriptor->mode), 6);
+			writeResponse(nameLen);
+			writeResponse(propertyDescriptor->name, nameLen);
+			writeResponse(&(propertyDescriptor->mode), 6);
 		}
 
-		return buildResponse(ResponseOK, dstOffset - HeaderLength);
+		buildResponse(ResponseOK);
 	}
 
-	static uint16_t buildHandshakeResponse() {
+	static void buildHandshakeResponse(uint16_t sequenceNumber) {
 		uint8_t i;
+		// First, try to find the client itself
 		for (i = 0; i < IoTClientCount; i++) {
-			// First, try to find an empty client slot
-			if (!clients[i].ip)
+			if (clients[i].ip == currentClientIP &&
+				clients[i].port == currentClientPort)
 				break;
 		}
 		if (i >= IoTClientCount) {
-			// Since there were no empty slots, we will have to overwrite someone...
-			nextClientIndex++;
-			if (nextClientIndex >= IoTClientCount)
-				nextClientIndex = 0;
-			i = nextClientIndex;
+			// If not found, try to find an empty client slot
+			for (i = 0; i < IoTClientCount; i++) {
+				if (!clients[i].ip)
+					break;
+			}
+			if (i >= IoTClientCount) {
+				// Since there were no empty slots, we will have to overwrite someone...
+				// TODO: create a RLU list of client id's
+				i = 0;
+			}
 		}
-		clients[i].id = nextClientId;
-		clients[i].sequenceNumber = 0;
+		clients[i].sequenceNumber = sequenceNumber;
 		clients[i].ip = currentClientIP;
 		clients[i].port = currentClientPort;
-		const uint16_t ret = buildResponse8(ResponseOK, nextClientId);
-		nextClientId += 2;
-		return ret;
+
+		writeResponse(i);
+
+		buildResponse(ResponseOK);
 	}
 
-	static uint16_t buildGoodByeResponse() {
-		const uint16_t ret = buildResponse(ResponseOK);
-		clients[clientIndex].sequenceNumber = 0xFFFF;
-		clients[clientIndex].id = 0xFF;
-		clients[clientIndex].ip = 0;
-		clients[clientIndex].port = 0;
-		return ret;
+	static void buildGoodByeResponse() {
+		buildResponse(ResponseOK);
+		clients[clientId].sequenceNumber = MaximumSequenceNumber;
+		clients[clientId].ip = 0;
+		clients[clientId].port = 0;
 	}
 
-	static uint16_t buildResponseEnumDescriptor(uint8_t interfaceIndex, uint8_t propertyIndex, const uint8_t* enumDescriptors, uint8_t count, uint8_t valueSize) {
-		uint16_t dstOffset = escapeBuffer(HeaderLength, &interfaceIndex, 1);
+	static void buildResponseEnumDescriptor(uint8_t interfaceIndex, uint8_t propertyIndex, const uint8_t* enumDescriptors, uint8_t count, uint8_t valueSize) {
+		writeResponse(interfaceIndex);
 
-		dstOffset = escapeBuffer(dstOffset, &propertyIndex, 1);
+		writeResponse(propertyIndex);
 
-		dstOffset = escapeBuffer(dstOffset, &count, 1);
+		writeResponse(count);
 
 		for (uint8_t i = 0; i < count; i++) {
 			// interfaceDescriptor->name
 			uint8_t nameLen = (uint8_t)strlen(*((char**)enumDescriptors));
-			dstOffset = escapeBuffer(dstOffset, &nameLen, 1);
-			dstOffset = escapeBuffer(dstOffset, *((char**)enumDescriptors), nameLen);
+			writeResponse(nameLen);
+			writeResponse(*((char**)enumDescriptors), nameLen);
 			enumDescriptors += sizeof(char*);
 			// interfaceDescriptor->value
-			dstOffset = escapeBuffer(dstOffset, enumDescriptors, valueSize);
+			writeResponse(enumDescriptors, valueSize);
 			enumDescriptors += valueSize;
 		}
 		
-		return buildResponse(ResponseOK, dstOffset - HeaderLength);
+		buildResponse(ResponseOK);
 	}
 
 public:
@@ -623,34 +638,36 @@ public:
 
 	static void begin() {
 		uint8_t i;
-		state = 0;
 		for (i = 0; i < IoTClientCount; i++) {
-			clients[i].sequenceNumber = 0xFFFF;
-			clients[i].id = 0xFF;
+			clients[i].sequenceNumber = MaximumSequenceNumber;
 			clients[i].ip = 0;
 			clients[i].port = 0;
 		}
-		nextClientIndex = IoTClientCount;
-		nextClientId = 0;
+		nameLength = 0;
+#ifdef IoTNameReadOnly
+		name = 0;
+#else
+		for (i = 0; i < IoTMaxNameLength; i++)
+			name[i] = 0;
+#endif
 #ifndef IoTNoPassword
 		passwordLength = 0;
-		clientPasswordLength = 0;
-		for (i = 0; i < IoTMaxPasswordLength; i++) {
+#ifdef IoTPasswordReadOnly
+		password = 0;
+#else
+		for (i = 0; i < IoTMaxPasswordLength; i++)
 			password[i] = 0;
-			clientPassword[i] = 0;
-		}
 #endif
-		clientPasswordLengthEscaped = 0;
-		clientIndex = 0;
-		clientId = 0;
+#endif
+		clientId = InvalidClientId;
 		clientSequenceNumber = 0;
 		clientMessage = 0;
 		clientMessageRepeated = false;
-		clientPayloadIndex = HeaderLength;
+		clientPayloadBuffer = 0;
 		clientPayloadLength = 0;
-		clientPayloadReceivedLength = 0;
-		clientError = 0;
-		clientResponseReady = 0;
+		clientResponseReady = false;
+
+		bufferOffset = ResponseHeaderLength;
 	}
 
 	inline static uint8_t isBigEndian() {
@@ -658,288 +675,208 @@ public:
 		return ((uint8_t*)&x)[0];
 	}
 
-	static uint8_t process(const uint8_t* receivedBuffer, uint16_t length, uint16_t* usedBytes = 0) {
-		uint8_t i;
-		uint16_t used = 0;
+	static uint8_t process(const uint8_t* srcBuffer, uint16_t length) {
+		if (length < (RequestHeaderLength + EndOfPacketLength) ||
+			srcBuffer[0] != StartOfPacket ||
+			srcBuffer[length - 1] != EndOfPacket)
+			return false;
 
-		while (length--) {
-			uint8_t b = *receivedBuffer++;
-			used++;
+		srcBuffer++;
+		clientMessage = *srcBuffer++;
+		clientId = *srcBuffer++;
+		clientSequenceNumber = ((uint16_t)srcBuffer[0]) | (((uint16_t)srcBuffer[1]) << 8);
+		srcBuffer += 2;
 
-			if (b == StartOfPacket) {
-				state = 1;
-				clientMessageRepeated = false;
-				clientPayloadIndex = HeaderLength;
-				clientPayloadLength = 0;
-				clientPayloadReceivedLength = 0;
-				clientError = 0;
-				clientResponseReady = 0;
-				continue;
+		uint16_t clientPasswordLength = *srcBuffer++;
+		if (clientPasswordLength > length - (RequestHeaderLength + EndOfPacketLength))
+			return false;
+		const uint8_t* clientPassword = srcBuffer;
+		srcBuffer += clientPasswordLength;
+
+		clientPayloadLength = ((uint16_t)srcBuffer[0]) | (((uint16_t)srcBuffer[1]) << 8);
+		if (clientPayloadLength != length - clientPasswordLength - (RequestHeaderLength + EndOfPacketLength))
+			return false;
+		srcBuffer += 2;
+		clientPayloadBuffer = srcBuffer;
+
+		clientResponseReady = false;
+		bufferOffset = ResponseHeaderLength;
+
+		switch (clientMessage) {
+		case MessageQueryDevice:
+			clientResponseReady = true;
+			if (clientPayloadLength ||
+				clientId != InvalidClientId ||
+				clientSequenceNumber != MaximumSequenceNumber)
+				buildResponse(ResponseInvalidPayload);
+			else if (clientPasswordLength)
+				buildResponse(ResponseWrongPassword);
+			else
+				buildQueryDeviceResponse();
+			break;
+		case MessageDescribeInterface:
+			clientResponseReady = true;
+			if (clientPayloadLength != 1 ||
+				clientId != InvalidClientId ||
+				clientSequenceNumber != MaximumSequenceNumber)
+				buildResponse(ResponseInvalidPayload);
+			else if (clientPasswordLength)
+				buildResponse(ResponseWrongPassword);
+			else
+				buildDescribeInterfaceResponse(*clientPayloadBuffer);
+			break;
+		case MessageDescribeEnum:
+			if (clientPayloadLength != 2 ||
+				clientId != InvalidClientId ||
+				clientSequenceNumber != MaximumSequenceNumber) {
+				clientResponseReady = true;
+				buildResponse(ResponseInvalidPayload);
+			} else if (clientPasswordLength) {
+				clientResponseReady = true;
+				buildResponse(ResponseWrongPassword);
 			}
 
-			switch ((state & ServerStateMask)) {
-			case 9:
-				if ((state & ServerFlagEscape)) {
-					b ^= 1;
-					state &= ~ServerFlagEscape;
-				} else if (b == Escape) {
-					clientPayloadReceivedLength++;
-					state |= ServerFlagEscape;
-					break;
-				}
+			// This message must be handled by the user
+			break;
+		case MessageChangeName:
+			if (clientPayloadLength ||
+				clientId != InvalidClientId ||
+				clientSequenceNumber != MaximumSequenceNumber) {
+				clientResponseReady = true;
+				buildResponse(ResponseInvalidPayload);
+				break;
+			}
 
-				if (clientPayloadReceivedLength == clientPayloadLength) {
-					state = 0;
-					if (b != EndOfPacket) {
-						clientError = ResponseEndOfPacketNotFound;
-					} else {
-						switch (clientMessage) {
-						case MessageQueryDevice:
-							clientResponseReady = buildQueryDeviceResponse();
-							break;
-						case MessageDescribeInterface:
-							clientResponseReady = buildDescribeInterfaceResponse(buffer[HeaderLength]);
-							break;
-						case MessageDescribeEnum:
-							// This one must be handled by the user
-							break;
-						case MessageChangePassword:
-#ifndef IoTNoPassword
-							// clientPayloadLength now contains the actual amount of valid bytes received (after escaping)
-							clientPayloadLength = clientPayloadIndex - HeaderLength;
-							if (clientPayloadLength > IoTMaxPasswordLength)
-								clientError = ResponsePayloadTooLarge;
+#ifdef IoTNameReadOnly
+			clientResponseReady = true;
+			buildResponse(ResponseNameReadOnly);
 #else
-							clientError = ResponsePasswordReadOnly;
+			if (clientPayloadLength > IoTMaxNameLength) {
+				clientResponseReady = true;
+				buildResponse(ResponsePayloadTooLarge);
+			}
 #endif
-							break;
-						default:
+
+			// This message must be handled by the user
+			break;
+		case MessageChangePassword:
+			if (clientPayloadLength ||
+				clientId != InvalidClientId ||
+				clientSequenceNumber != MaximumSequenceNumber) {
+				clientResponseReady = true;
+				buildResponse(ResponseInvalidPayload);
+				break;
+			}
+
 #ifndef IoTNoPassword
-							// If there is a password, and we are not handling one of the three messages above, we must validate the password
-							if (clientPasswordLength != passwordLength) {
-								clientError = ResponseWrongPassword;
-								break;
-							}
-							for (i = 0; i < passwordLength; i++) {
-								if (clientPassword[i] != password[i]) {
-									clientError = ResponseWrongPassword;
-									goto ReturnTrue;
-								}
-							}
-#endif
-
-							if (clientMessage == MessageHandshake) {
-								clientResponseReady = buildHandshakeResponse();
-								break;
-							} else if (clientMessage == MessageGoodBye) {
-								clientResponseReady = buildGoodByeResponse();
-								break;
-							}
-
-							// clientPayloadLength now contains the actual amount of valid bytes received (after escaping)
-							clientPayloadLength = clientPayloadIndex - HeaderLength;
-							break;
-						}
-					}
-					goto ReturnTrue;
-				}
-
-				clientPayloadReceivedLength++;
-
-				buffer[clientPayloadIndex] = b;
-				clientPayloadIndex++;
-				break;
-			case 1:
-				clientId = b;
-				state++;
-				break;
-			case 2:
-				clientSequenceNumber = (((uint16_t)b) << 1);
-				state++;
-				break;
-			case 3:
-				clientSequenceNumber |= (((uint16_t)b) << 8);
-				state++;
-				break;
-			case 4:
-				clientPasswordLengthEscaped = b >> 1;
-				if (clientPasswordLengthEscaped > IoTMaxPasswordLengthEscaped || (b & 1)) {
-					state = 0;
-					clientError = ResponseWrongPassword;
-					goto ReturnTrue;
-				}
-#ifndef IoTNoPassword
-				clientPasswordLength = 0;
-				if (!clientPasswordLengthEscaped)
-					state += 2;
-				else
-					state++;
-#else
-				state += 2;
-#endif
-				break;
-#ifndef IoTNoPassword
-			case 5:
-				clientPasswordLengthEscaped--;
-				if ((state & ServerFlagEscape)) {
-					b ^= 1;
-					state &= ~ServerFlagEscape;
-				} else if (b == Escape) {
-					if (!clientPasswordLengthEscaped)
-						state++;
-					else
-						state |= ServerFlagEscape;
-					break;
-				}
-				clientPassword[clientPasswordLength++] = b;
-				if (!clientPasswordLengthEscaped)
-					state++;
-				break;
-#endif
-			case 6:
-				clientMessage = b;
-				state++;
-				break;
-			case 7:
-				clientPayloadLength = (uint16_t)(b >> 1);
-				state++;
-				break;
-			case 8:
-				clientPayloadLength |= (((uint16_t)b) << 6);
-
-				state++;
-
-				// Time to check for errors
-
-				if ((clientMessage & 1) ||
-					(clientMessage > MessageMax) ||
-					(clientMessage <= MessageHandshake && (!(clientId & 1) || clientSequenceNumber != MaximumSequenceNumber))) {
-					state = 0;
-					goto ReturnFalse;
-				}
-
-				switch (clientMessage) {
-				case MessageQueryDevice:
-					if (clientPayloadLength || clientPasswordLength || clientId != ClientIdQueryDevice) {
-						state = 0;
-						goto ReturnFalse;
-					}
-					break;
-				case MessageDescribeInterface:
-					if (clientId != ClientIdDescribeInterface) {
-						state = 0;
-						goto ReturnFalse;
-					}
-					if (clientPasswordLength) {
-						state = 0;
-						clientError = ResponseWrongPassword;
-						goto ReturnTrue;
-					}
-					if (clientPayloadLength != 1) {
-						state = 0;
-						clientError = ResponseInvalidPayload;
-						goto ReturnTrue;
-					}
-					break;
-				case MessageDescribeEnum:
-					if (clientId != ClientIdDescribeEnum) {
-						state = 0;
-						goto ReturnFalse;
-					}
-					if (clientPasswordLength) {
-						state = 0;
-						clientError = ResponseWrongPassword;
-						goto ReturnTrue;
-					}
-					if (clientPayloadLength != 2) {
-						state = 0;
-						clientError = ResponseInvalidPayload;
-						goto ReturnTrue;
-					}
-					break;
-				case MessageChangePassword:
-					if (clientId != ClientIdChangePassword) {
-						state = 0;
-						goto ReturnFalse;
-					}
 #ifdef IoTPasswordReadOnly
-					state = 0;
-					clientError = ResponsePasswordReadOnly;
-					goto ReturnTrue;
+			clientResponseReady = true;
+			buildResponse(ResponsePasswordReadOnly);
 #else
-					// The password must be empty when changing the password
-					if (clientPasswordLength) {
-						state = 0;
-						clientError = ResponseWrongPassword;
-						goto ReturnTrue;
+			clientPayloadLength = clientPasswordLength;
+			if (clientPayloadLength > IoTMaxPasswordLength) {
+				clientResponseReady = true;
+				buildResponse(ResponsePayloadTooLarge);
+			} else {
+				clientPayloadBuffer = clientPassword;
+			}
+#endif
+#else
+			clientResponseReady = true;
+			buildResponse(ResponsePasswordReadOnly);
+#endif
+
+			// This message must be handled by the user
+			break;
+		default:
+			// Validate the message and the password
+			if (clientPasswordLength != passwordLength) {
+				clientResponseReady = true;
+				buildResponse(ResponseWrongPassword);
+				break;
+#ifndef IoTNoPassword
+			} else {
+				const uint8_t* passwordBuffer = password;
+				while (clientPasswordLength--) {
+					if (*clientPassword++ != *passwordBuffer++) {
+						clientResponseReady = true;
+						buildResponse(ResponseWrongPassword);
+						break;
 					}
-					if (clientPayloadLength > IoTMaxPayloadLength) {
-						state = 0;
-						clientError = ResponsePayloadTooLarge;
-						goto ReturnTrue;
-					}
+				}
+
+				if (clientResponseReady)
 					break;
 #endif
-				case MessageHandshake:
-					if (clientId != ClientIdHandshake) {
-						state = 0;
-						goto ReturnFalse;
-					}
-					if (clientPayloadLength) {
-						state = 0;
-						clientError = ResponseInvalidPayload;
-						goto ReturnTrue;
-					}
-					break;
-				default:
-					if ((clientId & 1)) {
-						state = 0;
-						clientError = ResponseUnknownClient;
-						goto ReturnTrue;
-					}
-					for (i = 0; i < IoTClientCount; i++) {
-						if (clients[i].id == clientId && clients[i].ip == currentClientIP && clients[i].port == currentClientPort) {
-							clientIndex = i;
+			}
 
-							if (clientSequenceNumber == clients[i].sequenceNumber) {
-								clientMessageRepeated = true;
-							} else {
-								if ((uint16_t)(clientSequenceNumber - clients[i].sequenceNumber) > 0x7FFF) {
-									// Old message arriving too late (we will just ignore the remaining bytes)
-									state = 0;
-									break;
-								} else {
-									clientMessageRepeated = false;
-									clients[i].sequenceNumber = clientSequenceNumber;
-								}
-							}
-							break;
-						}
-					}
-					if (i == IoTClientCount) {
-						state = 0;
-						clientError = ResponseUnknownClient;
-						goto ReturnTrue;
-					}
-					if (clientPayloadLength > IoTMaxPayloadLength) {
-						state = 0;
-						clientError = ResponsePayloadTooLarge;
-						goto ReturnTrue;
-					}
-					break;
-				}
+			if (clientMessage == MessageHandshake) {
+				clientResponseReady = true;
+				if (clientPayloadLength ||
+					clientId != InvalidClientId)
+					buildResponse(ResponseInvalidPayload);
+				else
+					buildHandshakeResponse(clientSequenceNumber);
 				break;
 			}
+
+			// Try to find the client
+			if (clientId >= IoTClientCount ||
+				clients[clientId].ip != currentClientIP ||
+				clients[clientId].port != currentClientPort) {
+				clientResponseReady = true;
+				buildResponse(ResponseUnknownClient);
+				break;
+			}
+
+			if (clientSequenceNumber == clients[clientId].sequenceNumber) {
+				clientMessageRepeated = true;
+			} else {
+				if ((uint16_t)(clientSequenceNumber - clients[clientId].sequenceNumber) > 0x7FFF) {
+					// Old message arriving too late (we will just ignore it)
+					return false;
+				} else {
+					clientMessageRepeated = false;
+					clients[clientId].sequenceNumber = clientSequenceNumber;
+
+					if (clientMessage == MessageGoodBye) {
+						clientResponseReady = true;
+						buildGoodByeResponse();
+					}
+				}
+			}
+			break;
 		}
 
-	ReturnFalse: // The default return value
-		if (usedBytes)
-			*usedBytes = used;
-		return false;
+		return true;
+	}
 
-	ReturnTrue:
-		if (usedBytes)
-			*usedBytes = used;
+	inline static uint8_t storedNameLength() {
+		return nameLength;
+	}
+
+	inline static const uint8_t* storedName() {
+		return name;
+	}
+
+	inline static uint8_t storedName(const char* newName, uint8_t newNameLength = 255) {
+		return storedName((uint8_t*)newName, newNameLength);
+	}
+
+	static uint8_t storedName(const uint8_t* newName, uint8_t newNameLength = 255) {
+		if (newNameLength && !newName)
+			return false;
+		nameLength = (newNameLength == 255 ? (uint8_t)strlen((const char*)newName) : newNameLength);
+#ifdef IoTNameReadOnly
+		name = newName;
+#else
+		if (newNameLength > IoTMaxNameLength)
+			return false;
+		for (newNameLength = 0; newNameLength < nameLength; newNameLength++)
+			name[newNameLength] = newName[newNameLength];
+		for (; newNameLength < IoTMaxNameLength; newNameLength++)
+			name[newNameLength] = 0;
+#endif
 		return true;
 	}
 
@@ -947,7 +884,7 @@ public:
 		return passwordLength;
 	}
 
-	inline static uint8_t* storedPassword() {
+	inline static const uint8_t* storedPassword() {
 #ifndef IoTNoPassword
 		return password;
 #else
@@ -955,19 +892,25 @@ public:
 #endif
 	}
 
-	inline static uint8_t storedPassword(const char* newPassword, uint8_t newPasswordLength) {
+	inline static uint8_t storedPassword(const char* newPassword, uint8_t newPasswordLength = 255) {
 		return storedPassword((uint8_t*)newPassword, newPasswordLength);
 	}
 
-	inline static uint8_t storedPassword(const uint8_t* newPassword, uint8_t newPasswordLength) {
+	static uint8_t storedPassword(const uint8_t* newPassword, uint8_t newPasswordLength = 255) {
 #ifndef IoTNoPassword
-		if (newPasswordLength > IoTMaxPasswordLength || newPasswordLength && !newPassword)
+		if (newPasswordLength && !newPassword)
 			return false;
-		passwordLength = newPasswordLength;
+		passwordLength = (newPasswordLength == 255 ? (uint8_t)strlen((const char*)newPassword) : newPasswordLength);
+#ifdef IoTPasswordReadOnly
+		password = newPassword;
+#else
+		if (newPasswordLength > IoTMaxPasswordLength)
+			return false;
 		for (newPasswordLength = 0; newPasswordLength < passwordLength; newPasswordLength++)
 			password[newPasswordLength] = newPassword[newPasswordLength];
 		for (; newPasswordLength < IoTMaxPasswordLength; newPasswordLength++)
 			password[newPasswordLength] = 0;
+#endif
 		return true;
 #else
 		return false;
@@ -982,6 +925,10 @@ public:
 		return clientMessageRepeated;
 	}
 
+	inline static uint16_t responseLength() {
+		return bufferOffset;
+	}
+
 	inline static const uint8_t* responseBuffer() {
 		return buffer;
 	}
@@ -990,143 +937,179 @@ public:
 		return clientPayloadLength;
 	}
 
-	inline static uint8_t* payloadBuffer() {
-		return (buffer + HeaderLength);
+	inline static const uint8_t* payloadBuffer() {
+		return clientPayloadBuffer;
 	}
 
-	inline static uint16_t buildResponseIfAlreadyPossible() {
-		return (clientError ? buildResponse(clientError, 0) : clientResponseReady);
+	inline static uint8_t responseReady() {
+		return clientResponseReady;
 	}
 
-	static uint16_t buildResponse(uint8_t responseCode, uint16_t payloadLength = 0) {
+	inline static void writeResponse(uint8_t value) {
+		buffer[bufferOffset++] = value;
+	}
+
+	static void writeResponse(const void* srcBuffer, uint16_t length) {
+		const uint8_t* srcBuffer8 = (const uint8_t*)srcBuffer;
+		uint8_t* dstBuffer = buffer + bufferOffset;
+		bufferOffset += length;
+		while (length--)
+			*dstBuffer++ = *srcBuffer8++;
+	}
+
+	static void writeResponseProperty8(uint8_t interfaceIndex, uint8_t propertyIndex, uint8_t value) {
+		uint8_t* dstBuffer = buffer + bufferOffset;
+		bufferOffset += 5;
+		*dstBuffer++ = interfaceIndex;
+		*dstBuffer++ = propertyIndex;
+		*dstBuffer++ = 1;
+		*dstBuffer++ = 0;
+		*dstBuffer++ = value;
+	}
+
+	static void writeResponseProperty16(uint8_t interfaceIndex, uint8_t propertyIndex, uint16_t value) {
+		uint8_t* dstBuffer = buffer + bufferOffset;
+		bufferOffset += 6;
+		*dstBuffer++ = interfaceIndex;
+		*dstBuffer++ = propertyIndex;
+		*dstBuffer++ = 2;
+		*dstBuffer++ = 0;
+		*dstBuffer++ = (uint8_t)value;
+		*dstBuffer++ = (uint8_t)(value >> 8);
+	}
+
+	static void writeResponseProperty32(uint8_t interfaceIndex, uint8_t propertyIndex, uint32_t value) {
+		uint8_t* dstBuffer = buffer + bufferOffset;
+		bufferOffset += 8;
+		*dstBuffer++ = interfaceIndex;
+		*dstBuffer++ = propertyIndex;
+		*dstBuffer++ = 4;
+		*dstBuffer++ = 0;
+		*dstBuffer++ = (uint8_t)value;
+		*dstBuffer++ = (uint8_t)(value >> 8);
+		*dstBuffer++ = (uint8_t)(value >> 16);
+		*dstBuffer++ = (uint8_t)(value >> 24);
+	}
+
+	static void writeResponsePropertyFloat(uint8_t interfaceIndex, uint8_t propertyIndex, float value) {
+		uint8_t* dstBuffer = buffer + bufferOffset;
+		bufferOffset += 8;
+		const uint32_t v = *((uint32_t*)&value);
+		*dstBuffer++ = interfaceIndex;
+		*dstBuffer++ = propertyIndex;
+		*dstBuffer++ = 4;
+		*dstBuffer++ = 0;
+		*dstBuffer++ = (uint8_t)v;
+		*dstBuffer++ = (uint8_t)(v >> 8);
+		*dstBuffer++ = (uint8_t)(v >> 16);
+		*dstBuffer++ = (uint8_t)(v >> 24);
+	}
+
+	static void writeResponsePropertyRGB(uint8_t interfaceIndex, uint8_t propertyIndex, uint8_t r, uint8_t g, uint8_t b) {
+		uint8_t* dstBuffer = buffer + bufferOffset;
+		bufferOffset += 7;
+		*dstBuffer++ = interfaceIndex;
+		*dstBuffer++ = propertyIndex;
+		*dstBuffer++ = 3;
+		*dstBuffer++ = 0;
+		*dstBuffer++ = r;
+		*dstBuffer++ = g;
+		*dstBuffer++ = b;
+	}
+
+	static void writeResponsePropertyRGB(uint8_t interfaceIndex, uint8_t propertyIndex, const uint8_t* rgb) {
+		uint8_t* dstBuffer = buffer + bufferOffset;
+		bufferOffset += 7;
+		*dstBuffer++ = interfaceIndex;
+		*dstBuffer++ = propertyIndex;
+		*dstBuffer++ = 3;
+		*dstBuffer++ = 0;
+		*dstBuffer++ = rgb[0];
+		*dstBuffer++ = rgb[1];
+		*dstBuffer++ = rgb[2];
+	}
+
+	static void writeResponsePropertyBuffer(uint8_t interfaceIndex, uint8_t propertyIndex, const void* srcBuffer, uint16_t length) {
+		uint8_t* dstBuffer = buffer + bufferOffset;
+		bufferOffset += length + 4;
+		*dstBuffer++ = interfaceIndex;
+		*dstBuffer++ = propertyIndex;
+		*dstBuffer++ = (uint8_t)length;
+		*dstBuffer++ = (uint8_t)(length >> 8);
+		const uint8_t* srcBuffer8 = (const uint8_t*)srcBuffer;
+		while (length--)
+			*dstBuffer++ = *srcBuffer8++;
+	}
+
+	static void buildResponse(uint8_t responseCode) {
+		const uint16_t payloadLength = bufferOffset - ResponseHeaderLength;
 		buffer[0] = StartOfPacket;
-		buffer[1] = clientId;
-		buffer[2] = (uint8_t)(clientSequenceNumber >> 1);
-		buffer[3] = ((uint8_t)(clientSequenceNumber >> 8)) & 0xFE;
-		buffer[4] = responseCode;
-		buffer[5] = ((uint8_t)payloadLength) << 1;
-		buffer[6] = ((uint8_t)(payloadLength >> 7)) << 1;
-		buffer[7 + payloadLength] = EndOfPacket;
-		return payloadLength + HeaderLength + EndOfPacketLength;
+		buffer[1] = clientMessage;
+		buffer[2] = clientId;
+		buffer[3] = (uint8_t)clientSequenceNumber;
+		buffer[4] = (uint8_t)(clientSequenceNumber >> 8);
+		buffer[5] = responseCode;
+		buffer[6] = (uint8_t)payloadLength;
+		buffer[7] = (uint8_t)(payloadLength >> 8);
+		buffer[ResponseHeaderLength + payloadLength] = EndOfPacket;
+		bufferOffset += EndOfPacketLength;
 	}
 
-	static uint16_t buildResponse8(uint8_t responseCode, uint8_t value) {
-		if (value == StartOfPacket || value == Escape) {
-			buffer[HeaderLength] = Escape;
-			buffer[HeaderLength + 1] = value ^ 1;
-			return buildResponse(responseCode, 2);
-		}
-		buffer[HeaderLength] = value;
-		return buildResponse(responseCode, 1);
+	inline static void buildResponseEnumDescriptor8(uint8_t interfaceIndex, uint8_t propertyIndex, const IoTEnumDescriptor8* enumDescriptors, uint8_t count) {
+		buildResponseEnumDescriptor(interfaceIndex, propertyIndex, (const uint8_t*)enumDescriptors, count, 1);
 	}
 
-	static uint16_t buildResponse16(uint8_t responseCode, uint16_t value) {
-		uint8_t dst = HeaderLength;
-		uint8_t v = (uint8_t)value;
-		if (v == StartOfPacket || v == Escape) {
-			buffer[dst++] = Escape;
-			buffer[dst++] = v ^ 1;
-		} else {
-			buffer[dst++] = v;
-		}
-		v = (uint8_t)(value >> 8);
-		if (v == StartOfPacket || v == Escape) {
-			buffer[dst++] = Escape;
-			buffer[dst++] = v ^ 1;
-		} else {
-			buffer[dst++] = v;
-		}
-		return buildResponse(responseCode, dst - HeaderLength);
+	inline static void buildResponseEnumDescriptor16(uint8_t interfaceIndex, uint8_t propertyIndex, const IoTEnumDescriptor16* enumDescriptors, uint8_t count) {
+		buildResponseEnumDescriptor(interfaceIndex, propertyIndex, (const uint8_t*)enumDescriptors, count, 2);
 	}
 
-	static uint16_t buildResponse32(uint8_t responseCode, uint32_t value) {
-		uint8_t dst = HeaderLength;
-		for (uint8_t i = 0; i < 4; i++) {
-			const uint8_t v = (uint8_t)value;
-			value >>= 8;
-			if (v == StartOfPacket || v == Escape) {
-				buffer[dst++] = Escape;
-				buffer[dst++] = v ^ 1;
-			} else {
-				buffer[dst++] = v;
-			}
-		}
-		return buildResponse(responseCode, dst - HeaderLength);
-	}
-
-	static uint16_t buildResponseFloat(uint8_t responseCode, float value) {
-		uint8_t dst = HeaderLength;
-		for (uint8_t i = 0; i < 4; i++) {
-			const uint8_t v = (uint8_t)(*((uint32_t*)&value));
-			*((uint32_t*)&value) >>= 8;
-			if (v == StartOfPacket || v == Escape) {
-				buffer[dst++] = Escape;
-				buffer[dst++] = v ^ 1;
-			} else {
-				buffer[dst++] = v;
-			}
-		}
-		return buildResponse(responseCode, dst - HeaderLength);
-	}
-
-	inline static uint16_t buildResponseBuffer(uint8_t responseCode, const void* srcBuffer, uint16_t length) {
-		return buildResponse(responseCode, escapeBuffer(HeaderLength, srcBuffer, length) - HeaderLength);
-	}
-
-	inline static uint16_t buildResponseEnumDescriptor8(uint8_t interfaceIndex, uint8_t propertyIndex, const IoTEnumDescriptor8* enumDescriptors, uint8_t count) {
-		return buildResponseEnumDescriptor(interfaceIndex, propertyIndex, (const uint8_t*)enumDescriptors, count, 1);
-	}
-
-	inline static uint16_t buildResponseEnumDescriptor16(uint8_t interfaceIndex, uint8_t propertyIndex, const IoTEnumDescriptor16* enumDescriptors, uint8_t count) {
-		return buildResponseEnumDescriptor(interfaceIndex, propertyIndex, (const uint8_t*)enumDescriptors, count, 2);
-	}
-
-	inline static uint16_t buildResponseEnumDescriptor32(uint8_t interfaceIndex, uint8_t propertyIndex, const IoTEnumDescriptor32* enumDescriptors, uint8_t count) {
-		return buildResponseEnumDescriptor(interfaceIndex, propertyIndex, (const uint8_t*)enumDescriptors, count, 4);
+	inline static void buildResponseEnumDescriptor32(uint8_t interfaceIndex, uint8_t propertyIndex, const IoTEnumDescriptor32* enumDescriptors, uint8_t count) {
+		buildResponseEnumDescriptor(interfaceIndex, propertyIndex, (const uint8_t*)enumDescriptors, count, 4);
 	}
 };
 
-uint8_t _IoTServer::state;
-
 _IoTServer::_IoTClient _IoTServer::clients[IoTClientCount];
-uint8_t _IoTServer::nextClientIndex, _IoTServer::nextClientId;
+
+
+uint8_t _IoTServer::nameLength;
+#ifdef IoTNameReadOnly
+const uint8_t* _IoTServer::name;
+#else
+const uint8_t _IoTServer::name[IoTMaxNameLength];
+#endif
 
 #ifndef IoTNoPassword
 uint8_t _IoTServer::passwordLength;
+#ifdef IoTPasswordReadOnly
+const uint8_t* _IoTServer::password;
+#else
 uint8_t _IoTServer::password[IoTMaxPasswordLength];
-uint8_t _IoTServer::clientPasswordLength;
-uint8_t _IoTServer::clientPassword[IoTMaxPasswordLength];
+#endif
 #else
 #undef passwordLength
-#undef clientPasswordLength
 #endif
-uint8_t _IoTServer::clientPasswordLengthEscaped;
-uint8_t _IoTServer::clientIndex;
+
 uint8_t _IoTServer::clientId;
 uint16_t _IoTServer::clientSequenceNumber;
 uint8_t _IoTServer::clientMessage;
 uint8_t _IoTServer::clientMessageRepeated;
-uint16_t _IoTServer::clientPayloadIndex;
+const uint8_t* _IoTServer::clientPayloadBuffer;
 uint16_t _IoTServer::clientPayloadLength;
-uint16_t _IoTServer::clientPayloadReceivedLength;
-uint8_t _IoTServer::clientError;
-uint16_t _IoTServer::clientResponseReady;
+uint8_t _IoTServer::clientResponseReady;
 uint32_t _IoTServer::currentClientIP;
 uint16_t _IoTServer::currentClientPort;
 
-uint8_t _IoTServer::buffer[HeaderLength + IoTMaxPayloadLength + EndOfPacketLength];
+uint16_t _IoTServer::bufferOffset;
+uint8_t _IoTServer::buffer[ResponseHeaderLength + IoTMaxPayloadLength + EndOfPacketLength];
 
 _IoTServer IoTServer;
-
-#undef IoTMaxPasswordLengthEscaped
 
 #undef StartOfPacket
 #undef Escape
 #undef EndOfPacket
-#undef HeaderLength
+#undef ResponseHeaderLength
+#undef RequestHeaderLength
 #undef EndOfPacketLength
-#undef ServerStateMask
-#undef ServerFlagEscape
 
 #pragma pack(pop)
 

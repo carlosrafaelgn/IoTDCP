@@ -1,16 +1,23 @@
 
-#define IoTNameUTF8 "Sample Device"
-// IoTCategoryUuid should be the same for all devices of the same category (i.e. same product)
-#define IoTCategoryUuid {0xB0, 0x2C, 0xB8, 0x8E, 0xBC, 0x6A, 0xC1, 0xB6, 0xEE, 0x49, 0xBC, 0x6F, 0xA4, 0x36, 0x41, 0x77} // 774136A4-6FBC-49EE-B6C1-6ABC8EB82CB0
-#define IoTUuid {0x19, 0xB4, 0x77, 0xF1, 0x7F, 0x54, 0xD2, 0x94, 0x22, 0x40, 0x9B, 0x68, 0xED, 0xA6, 0xD9, 0x7B} // 7BD9A6ED-689B-4022-94D2-547FF177B419
+//**************************************
+// If the device cannot be renamed
+#define IoTNameReadOnly
+//**************************************
+// If the device can be renamed
+// #define IoTMaxNameLength 32
+//**************************************
+
 //**************************************
 // If the device requires no password
 //#define IoTNoPassword
 //**************************************
-// If the device is password protected
+// If the password cannot be changed
 #define IoTPasswordReadOnly
-#define IoTMaxPasswordLength 32
 //**************************************
+// If the password can be changed
+//#define IoTMaxPasswordLength 32
+//**************************************
+
 #define IoTInterfaceCount 1
 #define IoTMaxPayloadLength 256
 
@@ -18,14 +25,15 @@
 #include <WiFiUdp.h>
 #include <IoTDCP.h>
 
-// Just to make it easier to reference the properties
+// Just to make it easier to reference the interfaces and properties
+#define Interface0 0
 #define PropState 0
 #define PropColor 1
 #define PropSampleEnum 2
 
 const IoTPropertyDescriptor IoTInterface0Properties[] = {
   { "State", IoTProperty.ModeReadOnly, IoTProperty.DataTypeU8, 1, IoTProperty.UnitEnum, IoTProperty.UnitOne, 0 },
-  { "Color", IoTProperty.ModeReadWrite, IoTProperty.DataTypeU8, 3, IoTProperty.UnitRGB, IoTProperty.UnitOne, 0 },
+  { "Color", IoTProperty.ModeReadWrite, IoTProperty.DataTypeRGBTriplet, 1, IoTProperty.UnitRGB, IoTProperty.UnitOne, 0 },
   { "Sample Enum", IoTProperty.ModeReadWrite, IoTProperty.DataTypeS16, 1, IoTProperty.UnitEnum, IoTProperty.UnitOne, 0 }
 };
 
@@ -49,25 +57,23 @@ uint16_t enumValue;
 uint32_t wifiConnectionStartTime;
 WiFiUDP udpServer;
 
-uint16_t responseLength;
-
 void describeEnum(IoTMessageDescribeEnum* msg) {
   if (msg->interfaceIndex) {
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterface);
+    IoTServer.buildResponse(IoTServer.ResponseInvalidInterface);
     return;
   }
 
   if (msg->propertyIndex != 2) {
     // Since describing state's enum is not necessary and we do not have any other enums...
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfaceProperty);
+    IoTServer.buildResponse(IoTServer.ResponseInvalidInterfaceProperty);
   } else {
-    responseLength = IoTServer.buildResponseEnumDescriptor16(0, 2, IoTInterface0SampleEnum, countof(IoTInterface0SampleEnum));
+    IoTServer.buildResponseEnumDescriptor16(0, 2, IoTInterface0SampleEnum, countof(IoTInterface0SampleEnum));
   }
 }
 
 void executeCommand(IoTMessageExecute* msg) {
   if (msg->interfaceIndex) {
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterface);
+    IoTServer.buildResponse(IoTServer.ResponseInvalidInterface);
     return;
   }
   switch (msg->interfaceCommand) {
@@ -76,69 +82,72 @@ void executeCommand(IoTMessageExecute* msg) {
       onOff = IoTInterfaceOnOff.StateOff;
       // Any other commands should go here
     }
-    responseLength = IoTServer.buildResponse8(IoTServer.ResponseOK, onOff);
+    IoTServer.writeResponseProperty8(Interface0, PropState, onOff);
+    IoTServer.buildResponse(IoTServer.ResponseOK);
     break;
   case IoTInterfaceOnOff.CommandOn:
     if (!IoTServer.isMessageRepeated()) {
       onOff = IoTInterfaceOnOff.StateOn;
       // Any other commands should go here
     }
-    responseLength = IoTServer.buildResponse8(IoTServer.ResponseOK, onOff);
+    IoTServer.writeResponseProperty8(Interface0, PropState, onOff);
+    IoTServer.buildResponse(IoTServer.ResponseOK);
     break;
   default:
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfaceCommand);
+    IoTServer.buildResponse(IoTServer.ResponseInvalidInterfaceCommand);
     break;
   }
 }
 
 void getProperty(IoTMessageGetProperty* msg) {
   if (msg->interfaceIndex) {
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterface);
+    IoTServer.buildResponse(IoTServer.ResponseInvalidInterface);
     return;
   }
   switch (msg->propertyIndex) {
   case PropState:
-    responseLength = IoTServer.buildResponse8(IoTServer.ResponseOK, onOff);
+    IoTServer.writeResponseProperty8(Interface0, PropState, onOff);
+    IoTServer.buildResponse(IoTServer.ResponseOK);
     break;
   case PropColor:
-    responseLength = IoTServer.buildResponseBuffer(IoTServer.ResponseOK, color, 3);
+    IoTServer.writeResponsePropertyRGB(Interface0, PropColor, color);
+    IoTServer.buildResponse(IoTServer.ResponseOK);
     break;
   case PropSampleEnum:
-    responseLength = IoTServer.buildResponse16(IoTServer.ResponseOK, enumValue);
+    IoTServer.writeResponseProperty16(Interface0, PropSampleEnum, enumValue);
+    IoTServer.buildResponse(IoTServer.ResponseOK);
     break;
   default:
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfaceProperty);
+    IoTServer.buildResponse(IoTServer.ResponseInvalidInterfaceProperty);
     return;
   }
 }
 
 void setProperty(IoTMessageSetProperty* msg, uint16_t payloadLength) {
   if (msg->interfaceIndex) {
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterface);
+    IoTServer.buildResponse(IoTServer.ResponseInvalidInterface);
     return;
   }
 
-  // Ignore the first two bytes (IoTMessageSetProperty.interfaceIndex and IoTMessageSetProperty.propertyIndex)
-  payloadLength -= 2;
-
   switch (msg->propertyIndex) {
   case PropState:
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseInterfacePropertyReadOnly);
+    IoTServer.buildResponse(IoTServer.ResponseInterfacePropertyReadOnly);
     break;
   case PropColor:
-    if (payloadLength != 3) {
-      responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfacePropertyValue);
+    if (msg->propertyValueLength != 3) {
+      IoTServer.buildResponse(IoTServer.ResponseInvalidInterfacePropertyValue);
     } else {
       color[0] = msg->propertyValue[0];
       color[1] = msg->propertyValue[1];
       color[2] = msg->propertyValue[2];
       // Any other commands should go here
-      responseLength = IoTServer.buildResponseBuffer(IoTServer.ResponseOK, color, 3);
+      IoTServer.writeResponsePropertyRGB(Interface0, PropColor, color);
+      IoTServer.buildResponse(IoTServer.ResponseOK);
     }
     break;
   case PropSampleEnum:
-    if (payloadLength != 2) {
-      responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfacePropertyValue);
+    if (msg->propertyValueLength != 2) {
+      IoTServer.buildResponse(IoTServer.ResponseInvalidInterfacePropertyValue);
     } else {
       switch (*((uint16_t*)msg->propertyValue)) {
       case 0:
@@ -147,16 +156,17 @@ void setProperty(IoTMessageSetProperty* msg, uint16_t payloadLength) {
       case 255:
         enumValue = *((uint16_t*)msg->propertyValue);
         // Any other commands should go here
-        responseLength = IoTServer.buildResponse16(IoTServer.ResponseOK, enumValue);
+        IoTServer.writeResponseProperty16(Interface0, PropSampleEnum, enumValue);
+        IoTServer.buildResponse(IoTServer.ResponseOK);
         break;
       default:
-        responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfacePropertyValue);
+        IoTServer.buildResponse(IoTServer.ResponseInvalidInterfacePropertyValue);
         break;
       }
     }
     break;
   default:
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseInvalidInterfaceProperty);
+    IoTServer.buildResponse(IoTServer.ResponseInvalidInterfaceProperty);
     return;
   }
 }
@@ -176,7 +186,7 @@ void handleMessage() {
     setProperty((IoTMessageSetProperty*)IoTServer.payloadBuffer(), IoTServer.payloadLength());
     break;
   default:
-    responseLength = IoTServer.buildResponse(IoTServer.ResponseUnsupportedMessage);
+    IoTServer.buildResponse(IoTServer.ResponseUnsupportedMessage);
     break;
   }
 }
@@ -201,6 +211,9 @@ void WiFiEvent(WiFiEvent_t event) {
 
 void setup() {
   IoTServer.begin();
+
+  IoTServer.storedName("Sample Device");
+
   //**************************************
   // Set the initial password, if the
   // device is password protected
@@ -245,33 +258,29 @@ void loop() {
     return;
 
   uint16_t bytesRead = udpServer.read(receivedBuffer, bytesInPacket < sizeof(receivedBuffer) ? bytesInPacket : sizeof(receivedBuffer));
-  if (!bytesRead || bytesRead > sizeof(receivedBuffer))
+  if (!bytesRead || bytesRead > sizeof(receivedBuffer)) {
+    udpServer.flush();
     return;
+  }
+
+  IPAddress ip = udpServer.remoteIP();
+  const uint16_t port = udpServer.remotePort();
+
+  IoTServer.currentClientIP = (uint32_t)ip;
+  IoTServer.currentClientPort = port;
 
   uint8_t flushed = false;
-  while (bytesInPacket) {
-    uint16_t usedBytes;
-    if (IoTServer.process(receivedBuffer, bytesRead, &usedBytes)) {
-      yield();
+  if (IoTServer.process(receivedBuffer, bytesRead)) {
+    yield();
 
-      IPAddress ip = udpServer.remoteIP();
-      const uint16_t port = udpServer.remotePort();
+    udpServer.flush();
+    flushed = true;
+    if (!IoTServer.responseReady())
+      handleMessage();
 
-      IoTServer.currentClientIP = (uint32_t)ip;
-      IoTServer.currentClientPort = port;
-
-      udpServer.flush();
-      flushed = true;
-      if (!(responseLength = IoTServer.buildResponseIfAlreadyPossible()))
-        handleMessage();
-
-      udpServer.beginPacket(ip, port);
-      udpServer.write(IoTServer.responseBuffer(), responseLength);
-      udpServer.endPacket();
-    } else {
-      yield();
-    }
-    bytesRead -= usedBytes;
+    udpServer.beginPacket(ip, port);
+    udpServer.write(IoTServer.responseBuffer(), IoTServer.responseLength());
+    udpServer.endPacket();
   }
 
   if (!flushed)
